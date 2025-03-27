@@ -390,22 +390,8 @@ async function enhanceGpuInfo(gpus) {
           let gpuData = null;
           
           if (isWindows) {
-            // Windows平台使用node-nvidia-smi模块
-            try {
-              // 尝试动态导入，如果没有安装会失败
-              const nvidiaSmi = require('node-nvidia-smi');
-              gpuData = await new Promise((resolve, reject) => {
-                nvidiaSmi.getNvsmi((err, data) => {
-                  if (err) reject(err);
-                  else resolve(data);
-                });
-              });
-            } catch (err) {
-              log.warn('无法使用node-nvidia-smi模块:', err.message);
-              log.info('请运行: npm install node-nvidia-smi');
-              // 尝试使用命令行方式
-              gpuData = await runNvidiaSmiCommand();
-            }
+            // 直接使用命令行方式获取GPU信息
+            gpuData = await runNvidiaSmiCommand();
           } else if (isLinux) {
             // Linux平台直接使用nvidia-smi命令
             gpuData = await runNvidiaSmiCommand();
