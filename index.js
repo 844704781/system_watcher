@@ -503,18 +503,21 @@ function isVirtualGPU(gpu) {
 async function sendDataToApi(data) {
   try {
     log.info('正在发送系统状态数据...');
-    // 使用JSON.stringify的第三个参数进行格式化（缩进2个空格）
-    log.info('发送数据内容:\n' + JSON.stringify(data, null, 2));
-    
-    // const response = await axios.post(CONFIG.API_ENDPOINT, data, {
-    //   headers: {
-    //     'Content-Type': 'application/json'
-    //   },
-    //   timeout: 5000 // 5秒超时
-    // });
-    //
-    // log.info(`数据发送成功，状态码: ${response.status}`);
-    return null;
+    args = JSON.stringify(data)
+    log.info('发送数据内容:\n' + args);
+    const req = {
+      business_type: "server_monitor",
+      args: args
+    }
+    const response = await axios.post(CONFIG.API_ENDPOINT, req, {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      timeout: 5000 // 5秒超时
+    });
+
+    log.info(`数据发送成功，状态码: ${response.status}`);
+    return response;
   } catch (error) {
     log.error('发送数据时出错:', error.message);
     if (error.response) {
