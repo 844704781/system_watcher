@@ -180,7 +180,7 @@ async function getNetworkInfo() {
                 if (privateIPv4 && privateIPv6) break;
             }
 
-            // 获取公网IP地址
+            // 获取公网IP地址 - 这里可能会导致超时
             const publicIPs = await getPublicIPs();
 
             return {
@@ -197,19 +197,76 @@ async function getNetworkInfo() {
         };
 
         // 使用Promise.race来实现超时控制
-        const networkInfo = await Promise.race([getNetworkData(), timeout]);
-        log.info("获取网络信息成功");
+        let networkInfo;
+        try {
+            networkInfo = await Promise.race([getNetworkData(), timeout]);
+            log.info("获取网络信息成功");
+        } catch (error) {
+            // 如果获取超时，尝试单独获取公网IP
+            log.warn(`网络信息获取部分超时: ${error.message}，尝试使用本地信息并单独获取公网IP`);
+            
+            // 获取本地网络基本信息
+            const networkStats = await si.networkStats().catch(() => [{}]);
+            const defaultNet = networkStats[0] || {};
+
+            const interfaces = os.networkInterfaces();
+            let privateIPv4 = null;
+            let privateIPv6 = null;
+
+            for (const ifaceName in interfaces) {
+                const iface = interfaces[ifaceName];
+                if (!iface) continue;
+
+                for (const info of iface) {
+                    if (!privateIPv4 && (info.family === 'IPv4' || info.family === 4)) {
+                        privateIPv4 = info.address;
+                    } else if (!privateIPv6 && (info.family === 'IPv6' || info.family === 6)) {
+                        privateIPv6 = info.address;
+                    }
+
+                    if (privateIPv4 && privateIPv6) break;
+                }
+                if (privateIPv4 && privateIPv6) break;
+            }
+
+            // 尝试获取缓存的公网IP或重新获取
+            const publicIPs = await getPublicIPs().catch(() => ({ ipv4: null, ipv6: null }));
+            
+            networkInfo = {
+                interface: defaultNet.iface || 'unknown',
+                privateIPv4: privateIPv4 || '127.0.0.1',
+                privateIPv6: privateIPv6 || '::1',
+                publicIPv4: publicIPs.ipv4,
+                publicIPv6: publicIPs.ipv6,
+                rx_bytes: defaultNet.rx_bytes || 0,
+                tx_bytes: defaultNet.tx_bytes || 0,
+                rx_sec: defaultNet.rx_sec || 0,
+                tx_sec: defaultNet.tx_sec || 0
+            };
+            log.info("使用部分恢复的网络信息");
+        }
+        
         return networkInfo;
 
     } catch (error) {
         log.error('获取网络信息时出错:', error.message);
+        
+        // 在完全失败的情况下，尝试获取公网IP
+        let publicIPs = { ipv4: null, ipv6: null };
+        try {
+            publicIPs = await getPublicIPs();
+            log.info("在网络模块失败后单独获取公网IP成功");
+        } catch (ipError) {
+            log.error('获取公网IP也失败:', ipError.message);
+        }
+        
         // 返回默认值，确保服务继续运行
         return {
             interface: 'unknown',
             privateIPv4: '127.0.0.1',
             privateIPv6: '::1',
-            publicIPv4: null,
-            publicIPv6: null,
+            publicIPv4: publicIPs.ipv4,
+            publicIPv6: publicIPs.ipv6,
             rx_bytes: 0,
             tx_bytes: 0,
             rx_sec: 0,
@@ -238,95 +295,106 @@ function isPrivateIPv6(ip) {
 // 更可靠的公网IP获取函数
 let cachedPublicIPv4 = null;
 let cachedPublicIPv6 = null;
-let lastIPFetchTime = 0;
-const IP_CACHE_DURATION = 10 * 60 * 1000; // 10分钟缓存
+let lastIPv4FetchTime = 0;  // IPv4 单独缓存时间
+let lastIPv6FetchTime = 0;  // IPv6 单独缓存时间
+const IP_CACHE_DURATION = 24 * 60 * 60 * 1000; // 缓存一天缓存
 
 async function getPublicIPs() {
     const now = Date.now();
+    let resultIPv4 = null;
+    let resultIPv6 = null;
 
-    // 如果缓存有效，直接返回缓存值
-    if (cachedPublicIPv4 && (now - lastIPFetchTime < IP_CACHE_DURATION)) {
-        return {ipv4: cachedPublicIPv4, ipv6: cachedPublicIPv6};
-    }
+    // 检查 IPv4 缓存是否有效
+    if (cachedPublicIPv4 && (now - lastIPv4FetchTime < IP_CACHE_DURATION)) {
+        resultIPv4 = cachedPublicIPv4;
+        log.info("使用缓存的公网IPv4地址");
+    } else {
+        // IPv4服务列表（按顺序尝试）
+        const ipv4Services = [
+            'https://api.ipify.org',
+            'https://ifconfig.me/ip',
+            'https://icanhazip.com',
+            'https://ipv4.icanhazip.com',
+            'https://v4.ident.me',
+            'https://ipecho.net/plain'
+        ];
 
-    // IPv4服务列表（按顺序尝试）
-    const ipv4Services = [
-        'https://api.ipify.org',
-        'https://ifconfig.me/ip',
-        'https://icanhazip.com',
-        'https://ipv4.icanhazip.com',
-        'https://v4.ident.me',
-        'https://ipecho.net/plain'
-    ];
+        // 尝试获取IPv4地址
+        for (const service of ipv4Services) {
+            try {
+                log.debug(`正在尝试从 ${service} 获取公网IPv4...`);
+                const response = await axios.get(service, {
+                    timeout: 5000,
+                    // 确保服务返回IPv4地址
+                    headers: {
+                        'Accept': 'text/plain',
+                        'User-Agent': 'Mozilla/5.0 (SystemMonitor)'
+                    }
+                });
+                const ip = response.data.trim();
 
-    // IPv6服务列表
-    const ipv6Services = [
-        'https://ipv6.icanhazip.com',
-        'https://v6.ident.me',
-        'https://ipv6.seeip.org'
-    ];
-
-    // 尝试获取IPv4地址
-    for (const service of ipv4Services) {
-        try {
-            log.debug(`正在尝试从 ${service} 获取公网IPv4...`);
-            const response = await axios.get(service, {
-                timeout: 5000,
-                // 确保服务返回IPv4地址
-                headers: {
-                    'Accept': 'text/plain',
-                    'User-Agent': 'Mozilla/5.0 (SystemMonitor)'
+                // 验证返回的是否是IPv4格式
+                if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+                    cachedPublicIPv4 = ip;
+                    lastIPv4FetchTime = now;  // 更新IPv4缓存时间
+                    resultIPv4 = ip;
+                    log.info(`成功获取公网IPv4: ${ip} (来源: ${service})`);
+                    break;
+                } else {
+                    log.warn(`从 ${service} 获取的IP格式不正确: ${ip}`);
                 }
-            });
-            const ip = response.data.trim();
-
-            // 验证返回的是否是IPv4格式
-            if (/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
-                cachedPublicIPv4 = ip;
-                log.info(`成功获取公网IPv4: ${ip} (来源: ${service})`);
-                break;
-            } else {
-                log.warn(`从 ${service} 获取的IP格式不正确: ${ip}`);
+            } catch (error) {
+                log.warn(`从 ${service} 获取IPv4失败: ${error.message}`);
+                // 继续尝试下一个服务
             }
-        } catch (error) {
-            log.warn(`从 ${service} 获取IPv4失败: ${error.message}`);
-            // 继续尝试下一个服务
         }
     }
 
-    // 尝试获取IPv6地址
-    for (const service of ipv6Services) {
-        try {
-            log.debug(`正在尝试从 ${service} 获取公网IPv6...`);
-            const response = await axios.get(service, {
-                timeout: 5000,
-                headers: {
-                    'Accept': 'text/plain',
-                    'User-Agent': 'Mozilla/5.0 (SystemMonitor)'
-                }
-            });
-            const ip = response.data.trim();
+    // 检查 IPv6 缓存是否有效
+    if (cachedPublicIPv6 && (now - lastIPv6FetchTime < IP_CACHE_DURATION)) {
+        resultIPv6 = cachedPublicIPv6;
+        log.info("使用缓存的公网IPv6地址");
+    } else {
+        // IPv6服务列表
+        const ipv6Services = [
+            'https://ipv6.icanhazip.com',
+            'https://v6.ident.me',
+            'https://ipv6.seeip.org'
+        ];
 
-            // 简单验证IPv6格式（包含冒号且不是IPv4）
-            if (ip.includes(':') && !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
-                cachedPublicIPv6 = ip;
-                log.info(`成功获取公网IPv6: ${ip} (来源: ${service})`);
-                break;
-            } else {
-                log.warn(`从 ${service} 获取的IPv6格式不正确: ${ip}`);
+        // 尝试获取IPv6地址
+        for (const service of ipv6Services) {
+            try {
+                log.debug(`正在尝试从 ${service} 获取公网IPv6...`);
+                const response = await axios.get(service, {
+                    timeout: 5000,
+                    headers: {
+                        'Accept': 'text/plain',
+                        'User-Agent': 'Mozilla/5.0 (SystemMonitor)'
+                    }
+                });
+                const ip = response.data.trim();
+
+                // 简单验证IPv6格式（包含冒号且不是IPv4）
+                if (ip.includes(':') && !/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) {
+                    cachedPublicIPv6 = ip;
+                    lastIPv6FetchTime = now;  // 更新IPv6缓存时间
+                    resultIPv6 = ip;
+                    log.info(`成功获取公网IPv6: ${ip} (来源: ${service})`);
+                    break;
+                } else {
+                    log.warn(`从 ${service} 获取的IPv6格式不正确: ${ip}`);
+                }
+            } catch (error) {
+                log.warn(`从 ${service} 获取IPv6失败: ${error.message}`);
+                // 继续尝试下一个服务
             }
-        } catch (error) {
-            log.warn(`从 ${service} 获取IPv6失败: ${error.message}`);
-            // 继续尝试下一个服务
         }
     }
-
-    // 更新最后获取时间
-    lastIPFetchTime = Date.now();
 
     return {
-        ipv4: cachedPublicIPv4,
-        ipv6: cachedPublicIPv6
+        ipv4: resultIPv4,
+        ipv6: resultIPv6
     };
 }
 
