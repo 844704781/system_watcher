@@ -156,16 +156,14 @@ async function getNetworkInfo() {
         );
 
         const getNetworkData = async () => {
-            // 只获取基本网络接口信息
+            // 获取本地网络信息
             const networkStats = await si.networkStats();
-            const defaultNet = networkStats[0] || {}; // 默认使用第一个网络接口，如果没有则使用空对象
+            const defaultNet = networkStats[0] || {};
 
-            // 获取本地IP地址信息（简化版本）
             const interfaces = os.networkInterfaces();
             let privateIPv4 = null;
             let privateIPv6 = null;
 
-            // 只遍历第一个找到的有效接口
             for (const ifaceName in interfaces) {
                 const iface = interfaces[ifaceName];
                 if (!iface) continue;
@@ -177,16 +175,20 @@ async function getNetworkInfo() {
                         privateIPv6 = info.address;
                     }
 
-                    // 如果已经找到IPv4和IPv6地址，就停止搜索
                     if (privateIPv4 && privateIPv6) break;
                 }
                 if (privateIPv4 && privateIPv6) break;
             }
 
+            // 获取公网IP地址
+            const publicIPs = await getPublicIPs();
+
             return {
                 interface: defaultNet.iface || 'unknown',
                 privateIPv4: privateIPv4 || '127.0.0.1',
                 privateIPv6: privateIPv6 || '::1',
+                publicIPv4: publicIPs.ipv4 || null,
+                publicIPv6: publicIPs.ipv6 || null,
                 rx_bytes: defaultNet.rx_bytes || 0,
                 tx_bytes: defaultNet.tx_bytes || 0,
                 rx_sec: defaultNet.rx_sec || 0,
@@ -206,6 +208,8 @@ async function getNetworkInfo() {
             interface: 'unknown',
             privateIPv4: '127.0.0.1',
             privateIPv6: '::1',
+            publicIPv4: null,
+            publicIPv6: null,
             rx_bytes: 0,
             tx_bytes: 0,
             rx_sec: 0,

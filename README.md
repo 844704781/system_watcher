@@ -171,8 +171,8 @@ API_ENDPOINT=http://your-api-endpoint/system-status ./dist/system-monitor-linux
 使用NSSM工具可以将打包后的exe文件作为服务运行：
 
 ```
-nssm install SystemWatcher "C:\path\to\system-monitor-win.exe"
-nssm set SystemWatcher AppDirectory "C:\path\to"
+nssm install SystemWatcher "C:\Users\SD45\workspace\system_watcher\system-monitor-win.exe"
+nssm set SystemWatcher AppDirectory "C:\Users\SD45\workspace\system_watcher"
 nssm start SystemWatcher
 ```
 
@@ -187,12 +187,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=your-username
-WorkingDirectory=/path/to/dist
-ExecStart=/path/to/dist/system-monitor-linux
-Restart=on-failure
-Environment=API_ENDPOINT=http://your-api-endpoint/system-status
-Environment=SERVER_ID=server001
+WorkingDirectory=/root/workspace
+ExecStart=/root/workspace/system-monitor-linux
+Restart=always
+RestartSec=10
+Environment=API_ENDPOINT=https://ocpc.dianbaobao.com/msg/deal/proc1
 
 [Install]
 WantedBy=multi-user.target
